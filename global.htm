@@ -1,0 +1,133 @@
+//Chrome code - WIP
+
+function openTicketInZendesk(tab) {
+  var subdomain  = tab.routeDetails.subdomain,
+      path       = tab.routeDetails.path;
+
+  chrome.tabs.query({ url: '*://' + subdomain + '.zendesk.com/agent/*' }, function(openTabs) {
+    var lotusTab = (openTabs[0].id !== tab.id) ? openTabs[0].id : openTabs[1].id;
+
+    var message = {
+      "target": "route",
+      "memo": { "hash": path }
+    };
+
+    chrome.tabs.executeScript(lotusTab, { code: "window.postMessage('" + JSON.stringify(message) + "', '*')" });
+    chrome.tabs.update(lotusTab, { active: true });
+    chrome.tabs.remove(tab.id);
+  });
+}
+
+function addPageAction(tabId) {
+  var iconState = (localStorage.getItem('disabledFor')) ? 'disabled' : 'enabled';
+
+  chrome.pageAction.show(tabId);
+  setIcon(iconState);
+}
+
+function getLotusUrlMatches(navUrl) {
+  var routeDetails    = null,
+      matchZendeskUrl = navUrl.match(/^https?:\/\/(.*).zendesk.com\/agent\/\#?\/?(.*)$/);
+
+  if (matchZendeskUrl) {
+    routeDetails = {};
+    routeDetails.subdomain = matchZendeskUrl[1];
+    routeDetails.path      = '/' + matchZendeskUrl[2].replace('#/', '');
+  }
+
+  return routeDetails;
+}
+
+function getTicketUrlMatches(navUrl) {
+  var routeDetails    = null,
+      matchTicketUrl  = navUrl.match(/^https?:\/\/(.*).zendesk.com\/(?:agent\/tickets|tickets|requests)\#?\/?(.*)$/);
+
+  if (matchTicketUrl) {
+    routeDetails = {};
+    routeDetails.subdomain = matchTicketUrl[1];
+    routeDetails.path      = '/tickets/' + matchTicketUrl[2].replace('#/', '');
+  }
+
+  return routeDetails;
+}
+
+function setIcon(option) {
+  var icon = '/app/images/icon38-' + option + '.png';
+
+  chrome.tabs.query({ url: '*://*.zendesk.com/agent/*' }, function(openTabs) {
+    openTabs.forEach(function(tab) {
+      chrome.pageAction.setIcon({ tabId: tab.id, path: icon });
+    });
+  });
+}
+
+function shouldMergeTab() {
+  var disableFor = localStorage.getItem('disabledFor');
+
+  if (disableFor) {
+    switch(disableFor) {
+      case 'nextLink':
+        localStorage.removeItem('disabledFor');
+        setIcon('enabled');
+        return false;
+      case 'untilSaid':
+        return false;
+    }
+  } else {
+    return true;
+  }
+}
+
+// Adds page action to any /agent URLs
+chrome.webNavigation.onDOMContentLoaded.addListener(function(details) {
+  addPageAction(details.tabId);
+}, { url: [ { urlContains: 'zendesk.com/agent' } ] });
+
+// Adds page action on initial installed or if the extension is reloaded
+// or Chrome updates
+chrome.runtime.onInstalled.addListener(function(details) {
+  // Find any tabs where the agent interface is open
+  chrome.tabs.query({ url: '*://*.zendesk.com/agent/*' }, function(openTabs) {
+    openTabs.forEach(function(tab) {
+      addPageAction(tab.id);
+    });
+  });
+
+  // Check if this was first time install
+  if (details.reason == "install") {
+    var welcomeUrl = chrome.extension.getURL('app/welcome.html');
+
+    chrome.tabs.create({ url: welcomeUrl });
+  }
+});
+
+function extractMatches(url) {
+  var matches          = null;
+      lotusUrlMatches  = getLotusUrlMatches(url),
+      ticketUrlMatches = getTicketUrlMatches(url);
+
+  if (ticketUrlMatches) {
+    matches = ticketUrlMatches;
+  } else if (lotusUrlMatches) {
+    matches = lotusUrlMatches;
+  }
+
+  return matches;
+}
+
+// Listen for navigation events the moment they occur, for zendesk.com URLs
+chrome.webNavigation.onBeforeNavigate.addListener(function(navDetails) {
+  var tabDetails       = { id: navDetails.tabId, url: navDetails.url },
+      zdUrlMatches     = extractMatches(navDetails.url),
+      mergeIsEnabled   = shouldMergeTab();
+
+  if (mergeIsEnabled && zdUrlMatches) {
+    tabDetails.routeDetails = zdUrlMatches;
+    openTicketInZendesk(tabDetails);
+  }
+}, { url: [ { hostSuffix: 'zendesk.com' } ] });
+
+chrome.alarms.onAlarm.addListener(function(alarm) {
+    localStorage.removeItem('disabledFor');
+    setIcon('enabled');
+});
